@@ -3,6 +3,9 @@ module Main exposing (..)
 import Html exposing (Html, div, form, h1, img, input, span, text)
 import Html.Attributes exposing (class, classList, disabled, placeholder, src, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
+import Http
+import Json.Decode as Decode
+import Json.Encode as Encode
 
 
 type alias Todo =
@@ -15,12 +18,11 @@ type alias Model =
     , nextTodo : Maybe String
     }
 
-
-init : Model
+init : (Model, Cmd Msg)
 init =
-    { todos = []
+    ({ todos = []
     , nextTodo = Nothing
-    }
+    }, getTodos )
 
 
 type Msg
@@ -28,33 +30,62 @@ type Msg
     | RemoveAll
     | ToggleComplete Int
     | UpdateNextTodo String
+    | ReceivedTodos (Result Http.Error (List Todo))
+    | AddResponse (Result Http.Error (List Todo))
+    | RemoveResponse (Result Http.Error (List Todo))
+    | ToggleResponse (Result Http.Error (List Todo))
 
 
-toggleCompleteAt : Int -> List Todo -> List Todo
-toggleCompleteAt index =
-  List.indexedMap
-    (\i t -> if i == index then {t | complete = not t.complete } else t )
+defaultTodo : Maybe String -> Todo
+defaultTodo txt =
+  (Todo (Maybe.withDefault "" txt) False)
 
-
-update : Msg -> Model -> Model
+update : Msg -> Model -> (Model, Cmd Msg)
 update msg model =
   case msg of
     AddTodo ->
-      { model | todos = (Todo (Maybe.withDefault "" model.nextTodo) False) :: model.todos
-      , nextTodo = Nothing
-      }
+      ( model
+      , addTodo <| defaultTodo model.nextTodo)
 
     RemoveAll ->
-      { model | todos = [] }
+      (model, removeAll)
 
     ToggleComplete index ->
-      { model | todos = toggleCompleteAt index model.todos }
+      (model, toggleComplete index)
 
     UpdateNextTodo txt ->
-      { model | nextTodo =
+      ({ model | nextTodo =
         case txt == "" of
           True -> Nothing
           False -> Just txt }
+      , Cmd.none)
+
+    ReceivedTodos res ->
+      receivedTodos model res
+
+    AddResponse res ->
+      receivedTodos model res
+
+    RemoveResponse res ->
+      receivedTodos model res
+
+    ToggleResponse res ->
+      receivedTodos model res
+
+receivedTodos : Model -> (Result Http.Error (List Todo)) -> (Model, Cmd Msg)
+receivedTodos model res =
+  case res of
+    Ok todos ->
+      ({model | todos = todos, nextTodo = Nothing }
+      , Cmd.none
+      )
+
+    Err err ->
+      let
+        _ = Debug.log "Error: " <| toString err
+      in
+      ( model, Cmd.none )
+
 
 
 view : Model -> Html Msg
@@ -112,13 +143,63 @@ actionButtons model =
     ]
 
 
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Sub.none
+
+--API
+toggleComplete : Int -> Cmd Msg
+toggleComplete index =
+  Http.send ToggleResponse <|
+    Http.post ("http://localhost:4000/api/toggle/" ++ (toString index))
+      Http.emptyBody
+      todosDecoder
+
+removeAll : Cmd Msg
+removeAll =
+  Http.send RemoveResponse <|
+    Http.post "http://localhost:4000/api/remove"
+      Http.emptyBody
+      todosDecoder
+
+addTodo : Todo -> Cmd Msg
+addTodo todo =
+  Http.send AddResponse <|
+    Http.post "http://localhost:4000/api/add"
+      (Http.jsonBody <| encodeTodo todo)
+      todosDecoder
+
+encodeTodo : Todo -> Encode.Value
+encodeTodo todo =
+  Encode.object
+    [("text", Encode.string todo.text)
+    , ("complete", Encode.bool todo.complete) ]
+
+
+getTodos : Cmd Msg
+getTodos =
+  Http.send ReceivedTodos <|
+    Http.get "http://localhost:4000/api/get" todosDecoder
+
+todosDecoder : Decode.Decoder (List Todo)
+todosDecoder =
+  Decode.list todoDecoder
+
+todoDecoder : Decode.Decoder Todo
+todoDecoder =
+  Decode.map2 Todo
+    (Decode.field "text" Decode.string)
+    (Decode.field "complete" Decode.bool)
+
+
 
 ---- PROGRAM ----
 
 
 main =
-    Html.beginnerProgram
-        { view = view
-        , model = init
-        , update = update
-        }
+    Html.program
+      { view = view
+      , init = init
+      , update = update
+      , subscriptions = always Sub.none
+      }
